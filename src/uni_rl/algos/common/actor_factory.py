@@ -19,6 +19,10 @@ def build_actor(
     priv_info_dim: int | None = None,
     priv_info_embed_dim: int = 9,
     priv_mlp_hidden_dims: tuple[int, ...] | list[int] = (256, 128, 9),
+    actor_std_mode: str | None = None,
+    initial_normalized_std: float = 0.02,
+    log_std_min: float = -10.0,
+    log_std_max: float = 2.0,
     **kwargs,
 ):
     """Build the correct actor model based on algorithm type."""
@@ -59,6 +63,10 @@ def build_actor(
             noise_zeta_mu=actor_noise_zeta_mu,
             noise_zeta_max=actor_noise_zeta_max,
             device=device,
+            std_mode=actor_std_mode,
+            initial_normalized_std=initial_normalized_std,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
         )
     raise ValueError(
         f"Unknown algo_type: {algo_type}. Custom off-policy actor types must "

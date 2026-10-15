@@ -218,6 +218,10 @@ class FlashSACLearner(LearnerBoilerplateMixin):
         use_whole_cycle_cuda_graph: bool | None = None,
         actor_normalize_parameters: bool = True,
         critic_normalize_parameters: bool = True,
+        actor_std_mode: str | None = None,
+        initial_normalized_std: float = 0.02,
+        log_std_min: float = -10.0,
+        log_std_max: float = 2.0,
     ):
         self.actor_normalize_parameters = bool(actor_normalize_parameters)
         self.critic_normalize_parameters = bool(critic_normalize_parameters)
@@ -269,6 +273,10 @@ class FlashSACLearner(LearnerBoilerplateMixin):
             noise_zeta_mu=actor_noise_zeta_mu,
             noise_zeta_max=actor_noise_zeta_max,
             device=self.device,
+            std_mode=actor_std_mode,
+            initial_normalized_std=initial_normalized_std,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
         )
         self.critic = FlashSACDoubleCritic(
             num_blocks=critic_num_blocks,

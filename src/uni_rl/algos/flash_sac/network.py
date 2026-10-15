@@ -45,13 +45,25 @@ class FlashSACActor(nn.Module):
         noise_zeta_mu: float = 2.0,
         noise_zeta_max: int = 16,
         device: str | torch.device = "cpu",
+        *,
+        std_mode: str | None = None,
+        initial_normalized_std: float = 0.02,
+        log_std_min: float = -10.0,
+        log_std_max: float = 2.0,
     ):
         super().__init__()
         self.action_dim = int(action_dim)
         self.embedder = FlashSACEmbedder(input_dim=input_dim, hidden_dim=hidden_dim)
         self.encoder = nn.ModuleList([FlashSACBlock(hidden_dim) for _ in range(num_blocks)])
         self.post_norm = UnitRMSNorm(hidden_dim)
-        self.predictor = NormalTanhPolicy(hidden_dim=hidden_dim, action_dim=action_dim)
+        self.predictor = NormalTanhPolicy(
+            hidden_dim=hidden_dim,
+            action_dim=action_dim,
+            std_mode=std_mode,
+            initial_normalized_std=initial_normalized_std,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
+        )
         self.noise_zeta_mu = noise_zeta_mu
         self.noise_zeta_max = noise_zeta_max
         ns = torch.arange(1, noise_zeta_max + 1, dtype=torch.float32)

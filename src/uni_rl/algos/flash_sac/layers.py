@@ -114,25 +114,74 @@ class FlashSACBlock(nn.Module):
         return x + residual
 
 
+def validate_policy_std(
+    std_mode: str | None,
+    initial_normalized_std: float,
+    log_std_min: float,
+    log_std_max: float,
+) -> None:
+    """Validate the Gaussian scale before constructing an actor or environment."""
+    if std_mode not in (None, "state_independent", "state_dependent"):
+        raise ValueError(f"Unsupported FlashSAC std mode: {std_mode!r}")
+    if not (
+        math.isfinite(log_std_min) and math.isfinite(log_std_max) and log_std_min < log_std_max
+    ):
+        raise ValueError("FlashSAC log_std_min and log_std_max must be finite and increasing")
+    if std_mode is not None:
+        if not math.isfinite(initial_normalized_std) or initial_normalized_std <= 0:
+            raise ValueError("FlashSAC initial_normalized_std must be finite and positive")
+        if not log_std_min < math.log(initial_normalized_std) < log_std_max:
+            raise ValueError("FlashSAC initial log std must lie strictly inside the log std bounds")
+
+
 class NormalTanhPolicy(nn.Module):
+    """Bounded Gaussian scale; an explicit std mode enables zero-gain residual heads.
+
+    ``None`` retains the original heads and checkpoint parameter names.
+    """
+
     def __init__(
         self,
         hidden_dim: int,
         action_dim: int,
         log_std_min: float = -10.0,
         log_std_max: float = 2.0,
+        *,
+        std_mode: str | None = None,
+        initial_normalized_std: float = 0.02,
     ):
         super().__init__()
+        validate_policy_std(std_mode, initial_normalized_std, log_std_min, log_std_max)
+        self.std_mode = std_mode
         self.mean_w = UnitLinear(hidden_dim, action_dim)
         self.mean_bias = nn.Parameter(torch.zeros(action_dim))
-        self.std_w = UnitLinear(hidden_dim, action_dim)
+        self.std_w = UnitLinear(hidden_dim, action_dim) if std_mode != "state_independent" else None
         self.std_bias = nn.Parameter(torch.zeros(action_dim))
+        self.mean_gain = nn.Parameter(torch.zeros(action_dim)) if std_mode is not None else None
+        self.std_gain = (
+            nn.Parameter(torch.zeros(action_dim)) if std_mode == "state_dependent" else None
+        )
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
+        if std_mode is not None:
+            normalized_log_std = (
+                2.0 * (math.log(initial_normalized_std) - log_std_min) / (log_std_max - log_std_min)
+                - 1.0
+            )
+            nn.init.constant_(self.std_bias, math.atanh(normalized_log_std))
 
     def get_mean_and_std(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        mean = F.linear(x, self.mean_w.w.weight, self.mean_bias)
-        raw_log_std = F.linear(x, self.std_w.w.weight, self.std_bias)
+        if self.mean_gain is None:
+            # Preserve the original computation for existing checkpoints.
+            assert self.std_w is not None
+            mean = F.linear(x, self.mean_w.w.weight, self.mean_bias)
+            raw_log_std = F.linear(x, self.std_w.w.weight, self.std_bias)
+        else:
+            mean = self.mean_w(x) * self.mean_gain + self.mean_bias
+            raw_log_std = self.std_bias.expand_as(mean)
+            if self.std_w is not None:
+                assert self.std_gain is not None
+                raw_log_std = raw_log_std + self.std_w(x) * self.std_gain
         log_std = self.log_std_min + (self.log_std_max - self.log_std_min) * 0.5 * (
             1.0 + torch.tanh(raw_log_std)
         )
