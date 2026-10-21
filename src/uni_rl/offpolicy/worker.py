@@ -860,6 +860,14 @@ def _run_collector(
                 cycle_timing_ms, "transition_extract_ms", phase_start_ns
             )
             _rb_ns = _time.perf_counter_ns()
+            replay_metadata = {}
+            if getattr(replay_buffer, "reference_step_range", None) is not None:
+                reference_steps = state.info.get("transition_reference_step")
+                if reference_steps is None:
+                    raise ValueError(
+                        "Environment must supply transition_reference_step before autoreset"
+                    )
+                replay_metadata["reference_steps"] = torch.as_tensor(reference_steps)
             if tensor_collector:
                 assert obs_t is not None
                 assert critic_t is not None
@@ -881,6 +889,7 @@ def _run_collector(
                     critic=critic_t,
                     next_critic=next_critic_t,
                     terminal_next_critic=terminal_critic_t,
+                    **replay_metadata,
                 )
                 if not published and not stop_event.is_set():
                     raise RuntimeError("replay ingress closed before collector shutdown")
@@ -914,6 +923,7 @@ def _run_collector(
                         if terminal_contract.terminal_critic is not None
                         else None
                     ),
+                    **replay_metadata,
                 )
                 if not published and not stop_event.is_set():
                     raise RuntimeError("replay ingress closed before collector shutdown")

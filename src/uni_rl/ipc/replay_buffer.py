@@ -31,11 +31,17 @@ class ReplayBuffer(SharedBufferBase):
         critic_dim: int = 0,
         ingress_depth: int = DEFAULT_INGRESS_DEPTH,
         ingress_device: str | torch.device = "cpu",
+        reference_step_range: tuple[int, int] | None = None,
     ):
         super().__init__(capacity, device, defer_gpu=True)
         self._obs_dim = obs_dim
         self._action_dim = action_dim
         self._critic_dim = critic_dim
+        if reference_step_range is not None:
+            first, stop = reference_step_range
+            if not 0 <= first < stop <= 2**24:
+                raise ValueError("reference_step_range must fit exact non-negative FP32 integers")
+        self.reference_step_range = reference_step_range
         self.last_incremental_h2d_time_s = 0.0
         self.trace_recorder: Any | None = None
         self.trace_thread_time = False
@@ -52,7 +58,13 @@ class ReplayBuffer(SharedBufferBase):
         )
 
     def _init_packed_layout(self, obs_dim: int, action_dim: int, critic_dim: int) -> None:
-        self._storage_width = 2 * obs_dim + action_dim + 3 + 2 * critic_dim
+        self._storage_width = (
+            2 * obs_dim
+            + action_dim
+            + 3
+            + 2 * critic_dim
+            + int(self.reference_step_range is not None)
+        )
 
         c = 0
         self._obs_sl = slice(c, c + obs_dim)
@@ -73,6 +85,7 @@ class ReplayBuffer(SharedBufferBase):
             c += critic_dim
             self._ncritic_sl = slice(c, c + critic_dim)
             c += critic_dim
+        self._reference_step_col = c if self.reference_step_range is not None else None
 
     def _init_bounded_ingress(
         self,
@@ -257,6 +270,7 @@ class ReplayBuffer(SharedBufferBase):
         critic=None,
         next_critic=None,
         terminal_next_critic=None,
+        reference_steps=None,
     ) -> bool:
         """Add batch (called by collector).
 
@@ -277,6 +291,7 @@ class ReplayBuffer(SharedBufferBase):
             critic,
             next_critic,
             terminal_next_critic,
+            reference_steps,
             trace_start_ns=_trace_ns,
         )
 
@@ -293,6 +308,7 @@ class ReplayBuffer(SharedBufferBase):
         critic=None,
         next_critic=None,
         terminal_next_critic=None,
+        reference_steps=None,
     ) -> bool:
         """Publish a collector vector in bounded ingress-sized chunks.
 
@@ -313,6 +329,7 @@ class ReplayBuffer(SharedBufferBase):
                 critic=critic,
                 next_critic=next_critic,
                 terminal_next_critic=terminal_next_critic,
+                reference_steps=reference_steps,
             )
 
         def optional_slice(
@@ -334,6 +351,7 @@ class ReplayBuffer(SharedBufferBase):
                 critic=optional_slice(critic, start, end),
                 next_critic=optional_slice(next_critic, start, end),
                 terminal_next_critic=optional_slice(terminal_next_critic, start, end),
+                reference_steps=optional_slice(reference_steps, start, end),
             )
             if not published:
                 return False
@@ -352,6 +370,7 @@ class ReplayBuffer(SharedBufferBase):
         critic,
         next_critic,
         terminal_next_critic,
+        reference_steps,
         *,
         trace_start_ns: int,
     ) -> bool:
@@ -364,6 +383,21 @@ class ReplayBuffer(SharedBufferBase):
         has_critic = self._critic_dim > 0 and critic is not None
         if self._critic_dim > 0 and (critic is None or next_critic is None):
             raise ValueError("ReplayBuffer with critic_dim > 0 requires critic and next_critic")
+        if self.reference_step_range is not None:
+            if (
+                not isinstance(reference_steps, torch.Tensor)
+                or reference_steps.shape != (count,)
+                or reference_steps.dtype not in (torch.int32, torch.int64)
+            ):
+                raise ValueError("Replay requires one integer reference step per transition")
+            first, stop = self.reference_step_range
+            # CUDA assertion stays on the producer stream, ordered before publication.
+            torch._assert_async(
+                ((reference_steps >= first) & (reference_steps < stop)).all(),
+                "Replay reference step is outside reference_step_range",
+            )
+        elif reference_steps is not None:
+            raise ValueError("reference_steps requires reference_step_range")
 
         wait_start_ns = time.perf_counter_ns()
         waited_for_free_slot = False
@@ -410,6 +444,8 @@ class ReplayBuffer(SharedBufferBase):
                 next_critic,
                 has_critic=has_critic,
             )
+            if self._reference_step_col is not None:
+                target[:, self._reference_step_col] = reference_steps
             self._patch_terminal_next_observations(
                 target[:, self._nobs_sl],
                 terminal_mask,
@@ -517,6 +553,7 @@ class ReplayBuffer(SharedBufferBase):
             "truncated": self._trunc_col,
             "critic": getattr(self, "_critic_sl", None),
             "next_critic": getattr(self, "_ncritic_sl", None),
+            "reference_steps": self._reference_step_col,
         }.get(field_name)
         if field is None:
             raise KeyError(f"Replay field {field_name!r} is unavailable")

@@ -187,6 +187,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         learner_prepare_hook: Callable[[Any, OffPolicyWarmupContext], None] | None = None,
         backend_device_binder: Callable[[str], str | None] | None = None,
         replay_pipeline_factory: Callable[..., GPUResidentReplayPipeline] | None = None,
+        replay_reference_step_range: tuple[int, int] | None = None,
         target_frequency: int = 1,
         policy_before_critic: bool = False,
         inference_placement: InferencePlacement | None = None,
@@ -361,6 +362,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
         # subprocess (e.g. mjwarp); None for backends that need no binding.
         self.backend_device_binder = backend_device_binder
         self.replay_pipeline_factory = replay_pipeline_factory
+        self.replay_reference_step_range = replay_reference_step_range
         self._collector_ready = False
         self._learner_coordination = LearnerCoordinationState()
         # Multi-GPU synchronous data parallelism (None = the bit-identical
@@ -1543,6 +1545,7 @@ class DoubleBufferOffPolicyRunner(OffPolicyRunner):
             ingress_slot_rows=self.replay_ingress_slot_rows,
             ingress_depth=self.replay_ingress_depth,
             ingress_device=self.device if gpu_centric_collector else "cpu",
+            reference_step_range=self.replay_reference_step_range,
             # CPU transport still owns a CUDA replay device and CPU ingress.
         )
         self._active_replay_buffer = replay_buffer
